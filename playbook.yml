@@ -1,3 +1,4 @@
+---
 - name: Configure and deploy Redmine
   hosts: all
   become: true
