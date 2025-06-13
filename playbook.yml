@@ -19,15 +19,6 @@
       tags:
         - download_cert
 
-    - name: Run Redmine container
-      community.docker.docker_container:
-        name: "{{ redmine_container_name }}"
-        image: bitnami/redmine:latest
-        ports:
-          - "{{ redmine_port }}:3000"
-        env_file: "{{ redmine_env_file }}"
-        restart_policy: always
-
     - name: Скачать корневой сертификат PostgreSQL
       get_url:
         url: https://storage.yandexcloud.net/cloud-certs/CA.pem
@@ -36,10 +27,60 @@
       tags:
         - download_cert
 
+    - name: Create Redmine environment directory
+      file:
+        path: /opt/redmine
+        state: directory
+        mode: '0755'
+
+    - name: Create Redmine environment file
+      template:
+        src: redmine.env.j2
+        dest: "{{ redmine_env_file }}"
+        mode: '0644'
+
+    - name: Проверить подключение к базе данных
+      command: >
+        psql
+        "host={{ db_host }}
+        port={{ db_port }}
+        sslmode={{ db_sslmode }}
+        sslrootcert={{ db_sslrootcert }}
+        dbname={{ db_name }}
+        user={{ db_user }}
+        target_session_attrs=read-write"
+        -c "SELECT 1;"
+      register: db_check
+      changed_when: false
+      failed_when: false
+
+    - name: Run Redmine container
+      community.docker.docker_container:
+        name: "{{ redmine_container_name }}"
+        image: "{{ redmine_image }}"
+        state: started
+        restart_policy: always
+        env_file: "{{ redmine_env_file }}"
+        ports:
+          - "{{ redmine_port }}:3000"
+      when: db_check.rc == 0
+      register: container_start
+
+    - name: Wait for Redmine to start
+      uri:
+        url: "http://localhost:{{ redmine_port }}/login"
+        method: GET
+        status_code: 200
+      register: result
+      until: result.status == 200
+      retries: 30
+      delay: 10
+      when: container_start.changed
+
 - hosts: webservers
   become: true
   vars_files:
-    - vault.yml  # Убедись, что тут хранится datadog_api_key: "твой_ключ"
+    - group_vars/webservers/vault.yml
 
   tasks:
     - name: Create http_check config directory
@@ -57,8 +98,8 @@
           init_config:
 
           instances:
-            - name: myapp_health
-              url: http://localhost:8080/health
+            - name: redmine_health
+              url: http://localhost:{{ redmine_port }}/login
               timeout: 1
               check_certificate_expiration: true
               skip_ssl_validation: true
