@@ -1,0 +1,87 @@
+- hosts: all
+  become: true
+  roles:
+    - geerlingguy.pip
+    - geerlingguy.docker
+  
+  tasks:
+    - name: Install PostgreSQL client
+      apt:
+        name: postgresql-client
+        state: present
+        update_cache: true
+
+    - name: Создать директорию для сертификата PostgreSQL
+      file:
+        path: /root/.postgresql
+        state: directory
+        mode: '0700'
+      tags:
+        - download_cert
+
+    - name: Run Redmine container
+      community.docker.docker_container:
+        name: "{{ redmine_container_name }}"
+        image: bitnami/redmine:latest
+        ports:
+          - "{{ redmine_port }}:3000"
+        env_file: "{{ redmine_env_file }}"
+        restart_policy: always
+
+    - name: Скачать корневой сертификат PostgreSQL
+      get_url:
+        url: https://storage.yandexcloud.net/cloud-certs/CA.pem
+        dest: /root/.postgresql/root.crt
+        mode: '0644'
+      tags:
+        - download_cert
+
+- hosts: webservers
+  become: true
+  vars_files:
+    - vault.yml  # Убедись, что тут хранится datadog_api_key: "твой_ключ"
+
+  tasks:
+    - name: Create http_check config directory
+      file:
+        path: /etc/datadog-agent/conf.d/http_check.d
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Copy http_check configuration
+      copy:
+        dest: /etc/datadog-agent/conf.d/http_check.d/conf.yaml
+        content: |
+          init_config:
+
+          instances:
+            - name: myapp_health
+              url: http://localhost:8080/health
+              timeout: 1
+              check_certificate_expiration: true
+              skip_ssl_validation: true
+      notify: Restart Datadog agent
+
+    - name: Ensure Docker container dd-agent is running
+      docker_container:
+        name: dd-agent
+        image: gcr.io/datadoghq/agent:7
+        state: started
+        restart_policy: unless-stopped
+        env:
+          DD_API_KEY: "{{ datadog_api_key }}"
+          DD_SITE: "datadoghq.com"
+          DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+        volumes:
+          - /var/run/docker.sock:/var/run/docker.sock:ro
+          - /proc/:/host/proc/:ro
+          - /sys/fs/cgroup/:/host/sys/fs/cgroup:ro
+          - /var/lib/docker/containers:/var/lib/docker/containers:ro
+
+  handlers:
+    - name: Restart Datadog agent
+      docker_container:
+        name: dd-agent
+        state: restarted

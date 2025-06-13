@@ -1,0 +1,8 @@
+redmine_db_adapter: "postgresql"
+redmine_db_host: "rc1a-fbj7420s53i3l6qk.mdb.yandexcloud.net"
+redmine_db_port: 6432
+redmine_db_user: "user1"
+redmine_db_name: "db1"
+redmine_db_password: '{{ vault_redmine_db_password }}'
+redmine_db_sslmode: "verify-full"
+redmine_db_sslcert_path: "/usr/local/share/ca-certificates/root.crt"
