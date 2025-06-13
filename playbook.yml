@@ -1,4 +1,5 @@
-- hosts: all
+- name: Configure and deploy Redmine
+  hosts: all
   become: true
   roles:
     - geerlingguy.pip
@@ -6,21 +7,21 @@
   
   tasks:
     - name: Install PostgreSQL client
-      apt:
+      ansible.builtin.apt:
         name: postgresql-client
         state: present
         update_cache: true
 
-    - name: Создать директорию для сертификата PostgreSQL
-      file:
+    - name: Create PostgreSQL certificate directory
+      ansible.builtin.file:
         path: /root/.postgresql
         state: directory
         mode: '0700'
       tags:
         - download_cert
 
-    - name: Скачать корневой сертификат PostgreSQL
-      get_url:
+    - name: Download PostgreSQL root certificate
+      ansible.builtin.get_url:
         url: https://storage.yandexcloud.net/cloud-certs/CA.pem
         dest: /root/.postgresql/root.crt
         mode: '0644'
@@ -28,19 +29,19 @@
         - download_cert
 
     - name: Create Redmine environment directory
-      file:
+      ansible.builtin.file:
         path: /opt/redmine
         state: directory
         mode: '0755'
 
     - name: Create Redmine environment file
-      template:
+      ansible.builtin.template:
         src: redmine.env.j2
         dest: "{{ redmine_env_file }}"
         mode: '0644'
 
-    - name: Проверить подключение к базе данных
-      command: >
+    - name: Check database connection
+      ansible.builtin.command: >
         psql
         "host={{ db_host }}
         port={{ db_port }}
@@ -65,26 +66,17 @@
           - "{{ redmine_port }}:3000"
       when: db_check.rc == 0
       register: container_start
+      notify: Wait for Redmine
 
-    - name: Wait for Redmine to start
-      uri:
-        url: "http://localhost:{{ redmine_port }}/login"
-        method: GET
-        status_code: 200
-      register: result
-      until: result.status == 200
-      retries: 30
-      delay: 10
-      when: container_start.changed
-
-- hosts: webservers
+- name: Configure monitoring
+  hosts: webservers
   become: true
   vars_files:
     - group_vars/webservers/vault.yml
 
   tasks:
     - name: Create http_check config directory
-      file:
+      ansible.builtin.file:
         path: /etc/datadog-agent/conf.d/http_check.d
         state: directory
         owner: root
@@ -92,8 +84,11 @@
         mode: '0755'
 
     - name: Copy http_check configuration
-      copy:
+      ansible.builtin.copy:
         dest: /etc/datadog-agent/conf.d/http_check.d/conf.yaml
+        mode: '0644'
+        owner: root
+        group: root
         content: |
           init_config:
 
@@ -106,7 +101,7 @@
       notify: Restart Datadog agent
 
     - name: Ensure Docker container dd-agent is running
-      docker_container:
+      community.docker.docker_container:
         name: dd-agent
         image: gcr.io/datadoghq/agent:7
         state: started
@@ -122,7 +117,19 @@
           - /var/lib/docker/containers:/var/lib/docker/containers:ro
 
   handlers:
+    - name: Wait for Redmine
+      ansible.builtin.uri:
+        url: "http://localhost:{{ redmine_port }}/login"
+        method: GET
+        status_code: 200
+      register: result
+      until: result.status == 200
+      retries: 30
+      delay: 10
+      listen: "restart redmine"
+
     - name: Restart Datadog agent
-      docker_container:
+      community.docker.docker_container:
         name: dd-agent
-        state: restarted
+        state: started
+        force_kill: true
